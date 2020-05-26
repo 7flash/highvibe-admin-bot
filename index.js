@@ -2,12 +2,14 @@ const bot = require('./bot.js')
 const uploadFileStream = require('./uploadFileStream')
 const getUserNameById = require('./getUserNameById')
 const saveAudioToFirestore = require('./saveAudioToFirestore')
+const saveVideoToFirestore = require('./saveVideoToFirestore')
 
 const conversations = {}
 
 const buildConversation = (conversation = {}) => ({
     step: conversation.step || Steps.initial,
     audio: conversation.audio || null,
+    video: conversation.video || null,
     user: conversation.user || null,
     removableMessageId: conversation.removableMessageId || null
 })
@@ -23,6 +25,30 @@ const buildAudio = ({ id, userId, userName, title, subTitle, author, artworkUrlP
     audioUrlPath: audioUrlPath || "",
     duration: duration || 0,
     tagIds: tagIds || ["highvibe"]
+})
+
+const buildVideo = ({ videoId, videoUrl, thumbUrl, bitrateBps, duration, fileName, fileSize, description, title, thumbHeight, thumbWidth }) => ({
+    id: videoId,
+    fileDetails: {
+        bitrateBps: bitrateBps || 128,
+        url: videoUrl,
+        creationTime: Math.round(Date.now() / 1000),
+        durationMs: duration ? duration * 1000 : 0,
+        fileName: fileName || "",
+        fileSize: fileSize || 0,
+        url: videoUrl,
+    },
+    snippet: {
+        description: description || "",
+        publishedAt: Math.round(Date.now() / 1000),
+        tags: ["highvibe"],
+        title: title || "",
+        videoThumbnail: {
+            url: thumbUrl,
+            height: thumbHeight || 0,
+            width: thumbWidth || 0,
+        }
+    },
 })
 
 const buildUser = ({ userName = '', userId = '' }) => ({ userName, userId })
@@ -42,6 +68,7 @@ const Commands = {
     start: /start/,
     login: /login/,
     audio: /audio/,
+    video: /video/,
     confirm: /confirm/,
     cancel: /cancel/,
 }
@@ -50,9 +77,12 @@ const Steps = {
     initial: "Initial",
     loginChosen: "LoginChosen",
     audioChosen: "AudioChosen",
+    videoChosen: "VideoChosen",
     audioReceived: "AudioReceived",
     photoReceived: "PhotoReceived",
     audioProcessing: "AudioProcessing",
+    videoProcessing: "VideoProcessing",
+    videoReceived: "VideoReceived",
 }
 
 const Messages = {
@@ -61,9 +91,11 @@ const Messages = {
     loginDone: ({ userId, userName }) => `🧘 Authorized as ${userName} (${userId}), choose next operation`,
     audio: () => "🎧 Send audio file (MP3)",
     photo: () => "🖼️ Send photo file (JPG)",
+    video: () => "Send video file (MP4)",
     confirm: (summary) => `🧾 Confirm? \r\n ${JSON.stringify(summary)}`,
     processing: () => `🕐 Please wait, file processing...`,
-    audioDone: () => `✅ Operation Succeed, choose next operation`,
+    audioDone: () => `✅ Audio uploaded, choose next operation`,
+    videoDone: () => `✅ Video uploaded, choose next operation`,
     cancel: () => `❎ Operation Cancelled, choose next operation`,
     failed: () => `❌ Operation Failed, choose next operation`
 }
@@ -71,14 +103,18 @@ const Messages = {
 const Callbacks = {
     login: "Login",
     audio: "Audio",
+    video: "Video",
     confirm: "Confirm",
+    confirmVideo: "ConfirmVideo",
     cancel: "Cancel",
 }
 
 const Buttons = {
     login: buildButton('Login', Callbacks.login),
     audio: buildButton('Audio', Callbacks.audio),
+    video: buildButton('Video', Callbacks.video),
     confirm: buildButton('Confirm', Callbacks.confirm),
+    confirmVideo: buildButton('Confirm', Callbacks.confirmVideo),
     cancel: buildButton('Cancel', Callbacks.cancel),
 }
 
@@ -99,6 +135,34 @@ const Handlers = {
             step: Steps.audioChosen
         }
     }),
+    video: (chatId) => sendMessage({
+        chatId,
+        message: Messages.video(),
+        buttons: [Buttons.cancel],
+        conversation: {
+            step: Steps.videoChosen
+        }
+    }),
+    confirmVideo: (chatId) => sendMessage({
+        chatId,
+        message: Messages.processing(),
+        buttons: [Buttons.cancel],
+        conversation: {
+            step: Steps.videoProcessing,
+        }
+    }).then(() =>
+        saveVideoToFirestore(conversations[chatId].video)
+    ).then(() => {
+        sendMessage({
+            chatId,
+            message: Messages.videoDone(),
+            buttons: [Buttons.login, Buttons.audio, Buttons.video],
+            conversation: {
+                step: Steps.initial,
+                video: null
+            }
+        })
+    }),
     confirm: (chatId) => sendMessage({
         chatId,
         message: Messages.processing(),
@@ -112,7 +176,7 @@ const Handlers = {
         sendMessage({
             chatId,
             message: Messages.audioDone(),
-            buttons: [Buttons.login, Buttons.audio],
+            buttons: [Buttons.login, Buttons.audio, Buttons.video],
             conversation: {
                 step: Steps.initial,
                 audio: null
@@ -124,20 +188,22 @@ const Handlers = {
         bot.sendMessage({
             chatId,
             message: Messages.failed(),
-            buttons: [Buttons.login, Buttons.audio],
+            buttons: [Buttons.login, Buttons.audio, Buttons.video],
             conversation: {
                 step: Steps.initial,
-                audio: null
+                audio: null,
+                video: null
             }
         })
     }),
     cancel: (chatId) => sendMessage({
         chatId,
         message: Messages.cancel(),
-        buttons: [Buttons.login, Buttons.audio],
+        buttons: [Buttons.login, Buttons.audio, Buttons.video],
         conversation: {
             step: Steps.initial,
-            audio: null
+            audio: null,
+            video: null
         }
     }),
 }
@@ -195,6 +261,20 @@ async function main() {
             Handlers.confirm(chatId)
     })
 
+    bot.onText(Commands.video, function (message) {
+        const chatId = message.chat.id
+
+        if (isStep(chatId, Steps.initial))
+            Handlers.video(chatId)
+    })
+
+    bot.onText(Commands.confirmVideo, function (message) {
+        const chatId = message.chat.id
+
+        if (isStep(chatId, Steps.videoReceived))
+            Handlers.confirmVideo(chatId)
+    })
+
     bot.onText(Commands.cancel, function (message) {
         const chatId = message.chat.id
 
@@ -218,7 +298,7 @@ async function main() {
             return sendMessage({
                 chatId,
                 message: Messages.loginDone(user),
-                buttons: [Buttons.login, Buttons.audio],
+                buttons: [Buttons.login, Buttons.audio, Buttons.video],
                 conversation: {
                     step: Steps.initial,
                     user: user,
@@ -228,7 +308,7 @@ async function main() {
             sendMessage({
                 chatId,
                 message: Messages.failed(),
-                buttons: [Buttons.login, Buttons.audio],
+                buttons: [Buttons.login, Buttons.audio, Buttons.video],
                 conversation: {
                     step: Steps.initial,
                     user: null
@@ -289,6 +369,66 @@ async function main() {
         })
     })
 
+    bot.on('video', message => {
+        const chatId = message.chat.id
+
+        if (!isStep(chatId, Steps.videoChosen)) return
+
+        const videoId = message.video.file_id
+        const thumbId = message.video.thumb.file_id
+        const thumbWidth = message.video.thumb.width
+        const thumbHeight = message.video.thumb.height
+        const duration = message.video.duration
+
+        sendMessage({
+            chatId,
+            message: Messages.processing(),
+            buttons: [Buttons.cancel],
+        }).then(() => {
+            const videoPath = `video/${videoId}.mp4`
+            const thumbPath = `videothumb/${videoId}.jpg`
+
+            const videoStream = bot.getFileStream(videoId)
+            const thumbStream = bot.getFileStream(thumbId)
+
+            return Promise.all([
+                uploadFileStream({
+                    fileStream: videoStream,
+                    filePath: videoPath
+                }),
+                uploadFileStream({
+                    fileStream: thumbStream,
+                    filePath: thumbPath,
+                }),
+            ])
+        }).then(result => {
+            const [videoUrl, thumbUrl] = result
+
+            console.log({ videoUrl, thumbUrl })
+
+            const video = buildVideo({
+                videoId,
+                videoUrl,
+                thumbUrl,
+                duration,
+                thumbHeight,
+                thumbWidth,
+            })
+
+            return sendMessage({
+                chatId,
+                message: Messages.confirm(video),
+                buttons: [Buttons.cancel, Buttons.videoConfirm],
+                conversation: {
+                    step: Steps.videoReceived,
+                    video: video,
+                }
+            })
+        }).catch(err => {
+            console.error(`Cannot upload video ${videoId} because of ${err.toString()}`)
+        })
+    })
+
     bot.on('photo', message => {
         const chatId = message.chat.id
 
@@ -311,7 +451,7 @@ async function main() {
             uploadFileStream({ fileStream, filePath })
         ).then(photoUrl => {
             console.log({ photoUrl })
-            
+
             const audio = buildAudio({
                 ...conversations[chatId].audio,
                 artworkUrlPath: photoUrl
@@ -345,6 +485,10 @@ async function main() {
             Handlers.cancel(chatId)
         } else if (callback == Callbacks.confirm) {
             Handlers.confirm(chatId)
+        } else if (callback == Callbacks.video) {
+            Handlers.video(chatId)
+        } else if (callback == Callbacks.videoConfirm) {
+            Handlers.videoConfirm(chatId)
         }
     })
 
