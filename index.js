@@ -418,7 +418,7 @@ async function main() {
             return sendMessage({
                 chatId,
                 message: Messages.confirm(video),
-                buttons: [Buttons.cancel, Buttons.videoConfirm],
+                buttons: [Buttons.cancel, Buttons.confirmVideo],
                 conversation: {
                     step: Steps.videoReceived,
                     video: video,
@@ -487,8 +487,8 @@ async function main() {
             Handlers.confirm(chatId)
         } else if (callback == Callbacks.video) {
             Handlers.video(chatId)
-        } else if (callback == Callbacks.videoConfirm) {
-            Handlers.videoConfirm(chatId)
+        } else if (callback == Callbacks.confirmVideo) {
+            Handlers.confirmVideo(chatId)
         }
     })
 
